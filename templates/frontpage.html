@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+
+<html>
+<head>
+    <title>My Sexy Blog</title>
+    <link type="text/css" rel="stylesheet" href="/stylesheets/main.css" />
+</head>
+
+<body>
+    <h1>Welcome to the test blog!</h1>
+{% for b in blogs %}
+    <div class='blog'>
+        <div class='subject'>{{b.subject}}</div>
+        <div class='content'>{{b.content}}</div>
+    </div>
+{%endfor%}
+</body>
+</html>
