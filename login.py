@@ -39,6 +39,9 @@ class BlogHandler(webapp2.RequestHandler):
             
     def login(self, user):
         self.set_secure_cookie('user_id', str(user.key().id()))
+        
+    def logout(self):
+        self.response.headers.add_header('Set-Cookie', 'user_id=; Path=/')
 
 SECRET='jags'
 
@@ -187,27 +190,25 @@ class signupHandler(BlogHandler):
             u.put()
             
             logging.debug(new_username)
-            userID=str(u.key().id())
-            cookie_val=str("user_id="+make_secure_val(userID))
-            self.response.headers.add_header('Set-Cookie', cookie_val+';Path=/')
+            self.login(u)
             self.redirect("/blog/welcome")
     
-class redirectHandler(webapp2.RequestHandler):
+class redirectHandler(BlogHandler):
     def get(self):
         self.redirect("/blog/login")
     
-class logoutHandler(webapp2.RequestHandler):
+class logoutHandler(BlogHandler):
     def get(self):
-        self.response.headers.add_header('Set-Cookie',"user_id=;Path=/")
+        self.logout()
         self.redirect("/blog/signup")
 
-class welcomeHandler(webapp2.RequestHandler):
+class welcomeHandler(BlogHandler):
     def get(self):
         cookie_val=self.request.cookies.get('user_id')
         if verifyCookie(cookie_val):
             user_id=cookie_val.split('|')[0]
             username=namefromID(user_id)
-            self.response.out.write("Thanks %s that worked." % username)
+            self.render("welcome.html", username=username)
         else:
             self.redirect("/blog/signup")
 
