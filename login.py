@@ -7,15 +7,13 @@ import hashlib
 import os
 import re
 import hmac
+
 from google.appengine.ext import db
 
 template_dir = os.path.join(os.path.dirname(__file__), 'templates')
 jinja_env = jinja2.Environment(loader = jinja2.FileSystemLoader(template_dir),
                                autoescape = True)
 
-def render_str(template, **params):
-    t = jinja_env.get_template(template)
-    return t.render(params)
 
 
 class BlogHandler(webapp2.RequestHandler):
@@ -36,28 +34,81 @@ class BlogHandler(webapp2.RequestHandler):
         self.response.headers.add_header(
             'Set-Cookie',
             '%s=%s; Path=/' % (name, cookie_val))
+        
+    def read_secure_cookie(self, name):
+        cookie_val = self.request.cookies.get(name)
+        return cookie_val and check_secure_val(cookie_val)
             
     def login(self, user):
         self.set_secure_cookie('user_id', str(user.key().id()))
         
     def logout(self):
         self.response.headers.add_header('Set-Cookie', 'user_id=; Path=/')
+        
+    def initialize(self, *a, **kw):
+        """overriding the default initialisation to always check for the user ID, needs us to add
+        .by_id method to User class"""
+        webapp2.RequestHandler.initialize(self, *a, **kw)
+        uid = self.read_secure_cookie('user_id')
+        self.user = uid and User.by_id(int(uid))
 
 SECRET='jags'
 
 class User(db.Model):
     username=db.StringProperty(required=True)
     passwordHash=db.StringProperty(required=True)
-    email=db.EmailProperty(required=False)
+    email=db.StringProperty()
     created=db.DateTimeProperty(auto_now_add=True)
+    
+    @classmethod
+    def by_id(cls, uid):
+        """given user ID returns a User object"""
+        return User.get_by_id(uid, parent = users_key())
+    
+    @classmethod
+    def by_username(cls, name):    
+        u = User.all().filter('username =', name).get()
+        return u
+    
+    @classmethod
+    def register(cls, name, pw, email = None):
+        pw_hash = makePasswordHash(name, pw)
+        return User(parent = users_key(),
+                    username = name,
+                    passwordHash = pw_hash,
+                    email = email)
+
+    @classmethod
+    def login(cls, name, pw):
+        u = cls.by_username(name)
+        if u and valid_pw(name, pw, u.passwordHash):
+            return u
+        
 
 
 def hash_str(s):
     return hmac.new(SECRET,s).hexdigest()
 
+def users_key(group = 'default'):
+    return db.Key.from_path('users', group)
+
+def render_str(template, **params):
+    t = jinja_env.get_template(template)
+    return t.render(params)
+
 def make_secure_val(s):
     t=hash_str(s)
     return s+'|'+t
+
+def check_secure_val(h):
+    ###Your code here
+    l=h.split('|')
+    if l[1]==hash_str(l[0]):
+        return l[0]
+    else:
+        return None
+
+
 
 def verifyCookie(cookie_val):
     user_id=cookie_val.split('|')[0]
@@ -72,13 +123,7 @@ def makePasswordHash(name,pwd,salt=None):
     h = hashlib.sha256(name + pwd + salt).hexdigest()
     return '%s,%s' % (salt, h)
 
-def check_secure_val(h):
-    ###Your code here
-    l=h.split('|')
-    if l[1]==hash_str(l[0]):
-        return l[0]
-    else:
-        return None
+
 
 def namefromID(userID):
     query=User.get_by_id(int(userID))
@@ -116,6 +161,16 @@ def verifyname(name):
         message="This user name is already taken!"
     return message
 
+def verifyusername(name):
+    if username_re.match(name):
+        message=True
+    else:
+        message=False
+    query=db.GqlQuery("select * from User where username =:name1", name1=name)
+    if query.count()>0:
+        message=True
+    return message
+
     
 def verifypwords(password,verify):
     if pword_re.match(password):
@@ -148,6 +203,10 @@ def matchPwd(userName,password):
         return ''
     return "Incorrect Password"
 
+def valid_pw(name, password, h):
+    salt = h.split(',')[0]
+    return h == makePasswordHash(name, password, salt)
+
 
 
 class signupHandler(BlogHandler):
@@ -156,17 +215,17 @@ class signupHandler(BlogHandler):
     
     def post(self):
         
-        new_username=self.request.get('username')
-        new_password=self.request.get('password')
-        new_verify=self.request.get('verify')
-        new_email=self.request.get('email')
+        self.username=self.request.get('username')
+        self.password=self.request.get('password')
+        self.verify=self.request.get('verify')
+        self.email=self.request.get('email')
         
-        params=dict(username=new_username,email=new_email)
+        params=dict(username=self.username,email=self.email)
         have_error=False
         
-        name_err=verifyname(new_username)
-        pword_err=verifypwords(new_password,new_verify)
-        email_err=verifyemail(new_email)
+        name_err=verifyname(self.username)
+        pword_err=verifypwords(self.password,self.verify)
+        email_err=verifyemail(self.email)
         
         if not name_err=='':
             params['name_err']=name_err
@@ -181,15 +240,9 @@ class signupHandler(BlogHandler):
         if have_error:
             self.render("signup.html",**params)
         else:
-            pwdHash=makePasswordHash(new_username,new_password)
-            
-            if new_email:
-                u=User(username=new_username,passwordHash=pwdHash,email=new_email)
-            else:
-                u=User(username=new_username,passwordHash=pwdHash)
+            u=User.register(self.username,self.password,self.email)
             u.put()
             
-            logging.debug(new_username)
             self.login(u)
             self.redirect("/blog/welcome")
     
@@ -204,10 +257,8 @@ class logoutHandler(BlogHandler):
 
 class welcomeHandler(BlogHandler):
     def get(self):
-        cookie_val=self.request.cookies.get('user_id')
-        if verifyCookie(cookie_val):
-            user_id=cookie_val.split('|')[0]
-            username=namefromID(user_id)
+        username = self.user.username #changed this from the homework solution
+        if verifyusername(username):
             self.render("welcome.html", username=username)
         else:
             self.redirect("/blog/signup")
@@ -217,10 +268,10 @@ class loginHandler(BlogHandler):
         self.render('login.html')
         
     def post(self):
-        
         new_username=self.request.get('username')
         new_password=self.request.get('password')
-        params={'text':new_username}
+        
+        params={'username':new_username}
         name_err=matchName(new_username)
         if not name_err=='':
             params['name_err']=name_err
@@ -231,8 +282,8 @@ class loginHandler(BlogHandler):
                 params['pword_err']=pword_err
                 self.render('login.html',**params)
             else:
-                u=User.gql("where username = :1",new_username).get()
-                self.login(u)
+                u=User.login(new_username, new_password)
+                self.login(u) 
                 self.redirect("/blog/welcome")
 
 
